@@ -29,19 +29,32 @@ io.on("connection", (socket) => {
     const isHost = data?.isHost === true;
 
     const reply = (result) => {
-      if (typeof callback === "function") callback(result);
+      if (typeof callback === "function") {
+        callback(result);
+      }
     };
 
-    if (!/^\d{4,6}$/.test(roomCode) || !playerId || playerId.length > 100) {
-      return reply({ success: false, message: "Oda bilgileri geçersiz." });
+    if (
+      !/^\d{4,6}$/.test(roomCode) ||
+      !playerId ||
+      playerId.length > 100
+    ) {
+      return reply({
+        success: false,
+        message: "Oda bilgileri geçersiz."
+      });
     }
 
     let room = rooms.get(roomCode);
 
     if (!room) {
       if (!isHost) {
-        return reply({ success: false, message: "Oda bulunamadı. Oda kodunu kontrol et." });
+        return reply({
+          success: false,
+          message: "Oda bulunamadı. Oda kodunu kontrol et."
+        });
       }
+
       room = { players: new Map() };
       rooms.set(roomCode, room);
     }
@@ -49,11 +62,15 @@ io.on("connection", (socket) => {
     const oldSocketId = room.players.get(playerId);
 
     if (!oldSocketId && room.players.size >= MAX_PLAYERS) {
-      return reply({ success: false, message: "Oda dolu. En fazla 4 oyuncu katılabilir." });
+      return reply({
+        success: false,
+        message: "Oda dolu. En fazla 4 oyuncu katılabilir."
+      });
     }
 
     if (oldSocketId && oldSocketId !== socket.id) {
       const oldSocket = io.sockets.sockets.get(oldSocketId);
+
       if (oldSocket) {
         oldSocket.leave(roomCode);
         oldSocket.data.gameRoom = null;
@@ -61,43 +78,68 @@ io.on("connection", (socket) => {
       }
     }
 
-    if (socket.data.gameRoom && socket.data.gameRoom !== roomCode) {
-      const previousRoom = rooms.get(socket.data.gameRoom);
+    if (
+      socket.data.gameRoom &&
+      socket.data.gameRoom !== roomCode
+    ) {
+      const previousRoomCode = socket.data.gameRoom;
+      const previousRoom = rooms.get(previousRoomCode);
+
       if (previousRoom) {
         previousRoom.players.delete(socket.data.playerId);
-        if (previousRoom.players.size === 0) rooms.delete(socket.data.gameRoom);
+
+        socket.to(previousRoomCode).emit("gamePlayerLeft", {
+          playerId: socket.data.playerId
+        });
+
+        if (previousRoom.players.size === 0) {
+          rooms.delete(previousRoomCode);
+        }
       }
-      socket.leave(socket.data.gameRoom);
+
+      socket.leave(previousRoomCode);
     }
 
     room.players.set(playerId, socket.id);
+
     socket.join(roomCode);
     socket.data.gameRoom = roomCode;
     socket.data.playerId = playerId;
 
     console.log("Oyuncu odaya katıldı:", roomCode, playerId);
-    reply({ success: true, roomCode });
+
+    reply({
+      success: true,
+      roomCode
+    });
   });
 
   socket.on("gameMessage", (packet) => {
     const roomCode = socket.data.gameRoom;
+
     if (!roomCode || !rooms.has(roomCode)) return;
     if (!packet || typeof packet !== "object") return;
 
     socket.to(roomCode).emit("gameMessage", {
-  from: socket.data.playerId,
-  data: packet
-});
-
+      from: socket.data.playerId,
+      data: packet
+    });
+  });
 
   socket.on("gameDirect", (packet) => {
     const roomCode = socket.data.gameRoom;
-    if (!roomCode || !packet || typeof packet !== "object") return;
+
+    if (!roomCode || !packet || typeof packet !== "object") {
+      return;
+    }
 
     const room = rooms.get(roomCode);
     if (!room) return;
 
-    const targetSocketId = room.players.get(String(packet.to || ""));
+    const targetSocketId = room.players.get(
+      String(packet.to || "")
+    );
+
     if (!targetSocketId) return;
 
     io.to(targetSocketId).emit("gameDirect", {
@@ -117,7 +159,10 @@ io.on("connection", (socket) => {
 
     if (room.players.get(playerId) === socket.id) {
       room.players.delete(playerId);
-      socket.to(roomCode).emit("gamePlayerLeft", { playerId });
+
+      socket.to(roomCode).emit("gamePlayerLeft", {
+        playerId
+      });
     }
 
     if (room.players.size === 0) {
@@ -129,5 +174,9 @@ io.on("connection", (socket) => {
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log("Karanlık Koridor sunucusu " + PORT + " portunda çalışıyor!");
+  console.log(
+    "Karanlık Koridor sunucusu " +
+    PORT +
+    " portunda çalışıyor!"
+  );
 });

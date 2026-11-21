@@ -1,3 +1,4 @@
+
 const path = require("path");
 const express = require("express");
 const http = require("http");
@@ -7,117 +8,126 @@ const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
 });
 
 app.use(express.static(path.join(__dirname, "public")));
-const PORT = process.env.PORT || 3000;
 
+const PORT = process.env.PORT || 3000;
 const rooms = new Map();
+const MAX_PLAYERS = 4;
 
 io.on("connection", (socket) => {
+  console.log("Oyuncu bağlandı:", socket.id);
 
-    console.log("Oyuncu bağlandı:", socket.id);
+  socket.on("joinGame", (data, callback) => {
+    const roomCode = String(data?.roomCode || "");
+    const playerId = String(data?.playerId || "");
+    const isHost = data?.isHost === true;
 
-    socket.on("createRoom", (callback) => {
+    const reply = (result) => {
+      if (typeof callback === "function") callback(result);
+    };
 
-        const roomCode = Math.random()
-            .toString(36)
-            .substring(2, 8)
-            .toUpperCase();
+    if (!/^\d{4,6}$/.test(roomCode) || !playerId || playerId.length > 100) {
+      return reply({ success: false, message: "Oda bilgileri geçersiz." });
+    }
 
-        rooms.set(roomCode, {
-            players: [socket.id]
-        });
+    let room = rooms.get(roomCode);
 
-        socket.join(roomCode);
+    if (!room) {
+      if (!isHost) {
+        return reply({ success: false, message: "Oda bulunamadı. Oda kodunu kontrol et." });
+      }
+      room = { players: new Map() };
+      rooms.set(roomCode, room);
+    }
 
-        console.log("Oda oluşturuldu:", roomCode);
+    const oldSocketId = room.players.get(playerId);
 
-        callback({
-            success: true,
-            roomCode: roomCode
-        });
+    if (!oldSocketId && room.players.size >= MAX_PLAYERS) {
+      return reply({ success: false, message: "Oda dolu. En fazla 4 oyuncu katılabilir." });
+    }
+
+    if (oldSocketId && oldSocketId !== socket.id) {
+      const oldSocket = io.sockets.sockets.get(oldSocketId);
+      if (oldSocket) {
+        oldSocket.leave(roomCode);
+        oldSocket.data.gameRoom = null;
+        oldSocket.data.playerId = null;
+      }
+    }
+
+    if (socket.data.gameRoom && socket.data.gameRoom !== roomCode) {
+      const previousRoom = rooms.get(socket.data.gameRoom);
+      if (previousRoom) {
+        previousRoom.players.delete(socket.data.playerId);
+        if (previousRoom.players.size === 0) rooms.delete(socket.data.gameRoom);
+      }
+      socket.leave(socket.data.gameRoom);
+    }
+
+    room.players.set(playerId, socket.id);
+    socket.join(roomCode);
+    socket.data.gameRoom = roomCode;
+    socket.data.playerId = playerId;
+
+    console.log("Oyuncu odaya katıldı:", roomCode, playerId);
+    reply({ success: true, roomCode });
+  });
+
+  socket.on("gameMessage", (packet) => {
+    const roomCode = socket.data.gameRoom;
+    if (!roomCode || !rooms.has(roomCode)) return;
+    if (!packet || typeof packet !== "object") return;
+
+    socket.to(roomCode).emit("gameMessage", {
+  from: socket.data.playerId,
+  data: packet
+});
+
+
+  socket.on("gameDirect", (packet) => {
+    const roomCode = socket.data.gameRoom;
+    if (!roomCode || !packet || typeof packet !== "object") return;
+
+    const room = rooms.get(roomCode);
+    if (!room) return;
+
+    const targetSocketId = room.players.get(String(packet.to || ""));
+    if (!targetSocketId) return;
+
+    io.to(targetSocketId).emit("gameDirect", {
+      from: socket.data.playerId,
+      data: packet.data
     });
+  });
 
-    socket.on("joinRoom", (roomCode, callback) => {
+  socket.on("disconnect", () => {
+    const roomCode = socket.data.gameRoom;
+    const playerId = socket.data.playerId;
 
-        const room = rooms.get(roomCode);
+    if (!roomCode || !playerId) return;
 
-        if (!room) {
-            return callback({
-                success: false,
-                message: "Oda bulunamadı!"
-            });
-        }
+    const room = rooms.get(roomCode);
+    if (!room) return;
 
-        if (room.players.length >= 8) {
-            return callback({
-                success: false,
-                message: "Oda dolu!"
-            });
-        }
+    if (room.players.get(playerId) === socket.id) {
+      room.players.delete(playerId);
+      socket.to(roomCode).emit("gamePlayerLeft", { playerId });
+    }
 
-        room.players.push(socket.id);
-        socket.join(roomCode);
+    if (room.players.size === 0) {
+      rooms.delete(roomCode);
+    }
 
-        io.to(roomCode).emit("playerJoined", {
-            playerId: socket.id,
-            players: room.players
-        });
-
-        callback({
-            success: true,
-            roomCode: roomCode
-        });
-    });
-
-    socket.on("playerMove", (data) => {
-
-        const roomCode = [...socket.rooms]
-            .find(room => room !== socket.id);
-
-        if (!roomCode) return;
-
-        socket.to(roomCode).emit("playerMoved", {
-            playerId: socket.id,
-            position: data.position,
-            rotation: data.rotation
-        });
-    });
-
-    socket.on("disconnect", () => {
-
-        console.log("Oyuncu ayrıldı:", socket.id);
-
-        for (const [roomCode, room] of rooms) {
-
-            if (room.players.includes(socket.id)) {
-
-                room.players = room.players.filter(
-                    id => id !== socket.id
-                );
-
-                io.to(roomCode).emit("playerLeft", {
-                    playerId: socket.id
-                });
-
-                if (room.players.length === 0) {
-                    rooms.delete(roomCode);
-                }
-            }
-        }
-    });
-
+    console.log("Oyuncu ayrıldı:", playerId);
+  });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-    console.log(
-        "Karanlık Koridor sunucusu " +
-        PORT +
-        " portunda çalışıyor!"
-    );
+  console.log("Karanlık Koridor sunucusu " + PORT + " portunda çalışıyor!");
 });
